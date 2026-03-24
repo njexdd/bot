@@ -18,8 +18,8 @@ def _get_app(data: dict) -> object:
 def _my_booking_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Отменить", callback_data="my:cancel")],
-            [InlineKeyboardButton(text="Назад", callback_data="menu:back")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data="my:cancel")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")],
         ]
     )
 

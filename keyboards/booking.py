@@ -16,7 +16,7 @@ def slots_kb(slots: list[dict]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for s in slots:
         rows.append([InlineKeyboardButton(text=str(s["time"]), callback_data=SlotCB(slot_id=int(s["id"])).pack())])
-    rows.append([InlineKeyboardButton(text="Назад к датам", callback_data=BookingActionCB(action="back_dates").pack())])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к датам", callback_data=BookingActionCB(action="back_dates").pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -24,10 +24,10 @@ def confirm_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Подтвердить", callback_data=BookingActionCB(action="confirm").pack()),
-                InlineKeyboardButton(text="Отмена", callback_data=BookingActionCB(action="cancel").pack()),
+                InlineKeyboardButton(text="✅ Подтвердить", callback_data=BookingActionCB(action="confirm").pack()),
+                InlineKeyboardButton(text="❌ Отмена", callback_data=BookingActionCB(action="cancel").pack()),
             ],
-            [InlineKeyboardButton(text="Назад к времени", callback_data=BookingActionCB(action="back_times").pack())],
+            [InlineKeyboardButton(text="⬅️ Назад к времени", callback_data=BookingActionCB(action="back_times").pack())],
         ]
     )
 

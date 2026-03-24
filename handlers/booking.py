@@ -77,6 +77,9 @@ async def calendar_nav(call: CallbackQuery, callback_data: CalendarCB, state: FS
         if month == 13:
             month = 1
             year += 1
+    elif callback_data.action == "empty_date":
+        await call.answer("На эту дату нет свободных слотов 😔", show_alert=True)
+        return
     elif callback_data.action == "select":
         chosen = date(callback_data.year, callback_data.month, callback_data.day).isoformat()
         await state.update_data(chosen_date=chosen)

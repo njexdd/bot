@@ -65,10 +65,10 @@ def build_calendar_kb(
 
             iso = d.isoformat()
             if iso not in available_dates:
-                row.append(InlineKeyboardButton(text=str(day), callback_data=CalendarCB(action="noop", year=year, month=month).pack()))
+                row.append(InlineKeyboardButton(text=str(day), callback_data=CalendarCB(action="empty_date", year=year, month=month).pack()))
                 continue
 
-            row.append(InlineKeyboardButton(text=f"✅ {day}", callback_data=CalendarCB(action="select", year=year, month=month, day=day).pack()))
+            row.append(InlineKeyboardButton(text=f"{day}", callback_data=CalendarCB(action="select", year=year, month=month, day=day).pack()))
         kb.append(row)
 
     kb.append([InlineKeyboardButton(text="Назад", callback_data="menu:back")])

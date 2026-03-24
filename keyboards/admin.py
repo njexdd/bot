@@ -14,13 +14,13 @@ class AdminCB(CallbackData, prefix="adm"):
 def admin_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Добавить рабочий день", callback_data=AdminCB(action="add_day").pack())],
-            [InlineKeyboardButton(text="Добавить слоты на дату", callback_data=AdminCB(action="add_slots").pack())],
-            [InlineKeyboardButton(text="Удалить слот", callback_data=AdminCB(action="delete_slot").pack())],
-            [InlineKeyboardButton(text="Закрыть день", callback_data=AdminCB(action="close_day").pack())],
-            [InlineKeyboardButton(text="Отменить запись клиента", callback_data=AdminCB(action="cancel_booking").pack())],
-            [InlineKeyboardButton(text="Расписание на дату", callback_data=AdminCB(action="schedule").pack())],
-            [InlineKeyboardButton(text="Назад", callback_data="menu:back")],
+            [InlineKeyboardButton(text="➕ Добавить рабочий день", callback_data=AdminCB(action="add_day").pack())],
+            [InlineKeyboardButton(text="➕ Добавить слоты на дату", callback_data=AdminCB(action="add_slots").pack())],
+            [InlineKeyboardButton(text="❌ Удалить слот", callback_data=AdminCB(action="delete_slot").pack())],
+            [InlineKeyboardButton(text="❌ Закрыть день", callback_data=AdminCB(action="close_day").pack())],
+            [InlineKeyboardButton(text="❌ Отменить запись клиента", callback_data=AdminCB(action="cancel_booking").pack())],
+            [InlineKeyboardButton(text="📅 Расписание на дату", callback_data=AdminCB(action="schedule").pack())],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")],
         ]
     )
 

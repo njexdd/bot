@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -10,8 +10,10 @@ from aiogram.types import CallbackQuery, Message
 
 from database.repository import BookingRepository, SlotRepository, UserRepository
 from keyboards.admin import AdminCB, admin_menu_kb, back_to_admin_kb
+from keyboards.calendar import CalendarCB, build_calendar_kb
 from services.booking_service import BookingService
 from services.reminder_service import ReminderService
+from utils.helpers import iso_in_days
 
 
 router = Router()
@@ -65,10 +67,24 @@ async def admin_actions(call: CallbackQuery, callback_data: AdminCB, state: FSMC
 
     if action == "add_day":
         await state.set_state(AdminStates.waiting_day_date)
+        today = date.today()
+        end_date = iso_in_days(90)
+        
+        # Генерируем все даты на 90 дней вперед, чтобы кнопки в календаре были активны
+        all_future_dates = {(today + timedelta(days=i)).isoformat() for i in range(90)}
+        
+        kb = build_calendar_kb(
+            year=today.year,
+            month=today.month,
+            available_dates=all_future_dates,
+            min_date=today,
+            max_date=date.fromisoformat(end_date),
+        )
+
         await call.message.edit_text(
-            "<b>Добавить рабочий день</b>\n\nОтправьте дату в формате <code>YYYY-MM-DD</code>.\n"
+            "Добавить рабочий день\n\nВыберите дату в календаре:\n"
             "Будут добавлены слоты по умолчанию: 10:00, 12:00, 14:00, 16:00, 18:00",
-            reply_markup=back_to_admin_kb(),
+            reply_markup=kb,
         )
         await call.answer()
         return
@@ -124,18 +140,45 @@ async def admin_actions(call: CallbackQuery, callback_data: AdminCB, state: FSMC
     await call.answer("Неизвестное действие.", show_alert=True)
 
 
-@router.message(AdminStates.waiting_day_date)
-async def admin_add_day(message: Message, state: FSMContext, **data) -> None:
+@router.callback_query(CalendarCB.filter(), AdminStates.waiting_day_date)
+async def admin_add_day_calendar(call: CallbackQuery, callback_data: CalendarCB, state: FSMContext, **data) -> None:
     app = _get_app(data)
-    d = _parse_date(message.text or "")
-    if not d:
-        await message.answer("Неверный формат даты. Пример: <code>2026-03-18</code>", reply_markup=back_to_admin_kb())
+    today = date.today()
+    max_d = date.fromisoformat(iso_in_days(90))
+    year, month = callback_data.year, callback_data.month
+
+    if callback_data.action == "prev":
+        month -= 1
+        if month == 0:
+            month, year = 12, year - 1
+    elif callback_data.action == "next":
+        month += 1
+        if month == 13:
+            month, year = 1, year + 1
+    elif callback_data.action == "select":
+        chosen = date(callback_data.year, callback_data.month, callback_data.day).isoformat()
+        times = ["10:00", "12:00", "14:00", "16:00", "18:00"]
+        slots_repo = SlotRepository(app.db)
+        await slots_repo.create_slots(chosen, times)
+        await state.clear()
+        await call.message.edit_text(f"✅ Готово. Слоты на {chosen} добавлены.", reply_markup=back_to_admin_kb())
+        await call.answer()
         return
-    times = ["10:00", "12:00", "14:00", "16:00", "18:00"]
-    slots_repo = SlotRepository(app.db)
-    await slots_repo.create_slots(d, times)
-    await state.clear()
-    await message.answer(f"Готово. Слоты на <b>{d}</b> добавлены.", reply_markup=back_to_admin_kb())
+    else:
+        await call.answer()
+        return
+
+    # Обновляем календарь при перелистывании месяцев
+    all_future_dates = {(today + timedelta(days=i)).isoformat() for i in range(90)}
+    kb = build_calendar_kb(
+        year=year,
+        month=month,
+        available_dates=all_future_dates,
+        min_date=today,
+        max_date=max_d
+    )
+    await call.message.edit_reply_markup(reply_markup=kb)
+    await call.answer()
 
 
 @router.message(AdminStates.waiting_slots)
