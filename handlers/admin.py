@@ -190,19 +190,86 @@ async def admin_actions(call: CallbackQuery, callback_data: AdminCB, state: FSMC
 
     if action == "close_day":
         await state.set_state(AdminStates.waiting_close_day)
+        
+        today = date.today()
+        end_date = iso_in_days(90)
+        all_future_dates = {(today + timedelta(days=i)).isoformat() for i in range(90)}
+        
+        kb = build_calendar_kb(
+            year=today.year,
+            month=today.month,
+            available_dates=all_future_dates,
+            min_date=today,
+            max_date=date.fromisoformat(end_date),
+        )
+        
         await call.message.edit_text(
-            "<b>Закрыть день</b>\n\nОтправьте дату в формате <code>YYYY-MM-DD</code>.\n"
+            "Закрыть день\n\nВыберите дату в календаре:\n"
             "Все слоты на эту дату будут помечены как недоступные.",
-            reply_markup=back_to_admin_kb(),
+            reply_markup=kb,
         )
         await call.answer()
         return
 
     if action == "cancel_booking":
         await state.set_state(AdminStates.waiting_cancel_booking)
+        
+        today = date.today()
+        end_date = iso_in_days(90)
+        # Генерируем даты на 90 дней вперед [cite: 41, 42]
+        all_future_dates = {(today + timedelta(days=i)).isoformat() for i in range(90)}
+        
+        kb = build_calendar_kb(
+            year=today.year,
+            month=today.month,
+            available_dates=all_future_dates,
+            min_date=today,
+            max_date=date.fromisoformat(end_date),
+        )
+        
         await call.message.edit_text(
-            "<b>Отменить запись клиента</b>\n\nОтправьте <code>booking_id</code> (число).",
-            reply_markup=back_to_admin_kb(),
+            "Отменить запись клиента\n\nВыберите дату в календаре:",
+            reply_markup=kb,
+        )
+        await call.answer()
+        return
+
+    if action == "do_cancel":
+        booking_id = callback_data.booking_id
+        app = _get_app(data)
+        
+        booking_repo = BookingRepository(app.db)
+        booking = await booking_repo.get_booking_by_id(booking_id)
+        
+        if not booking:
+            await call.answer("Запись не найдена.", show_alert=True)
+            return
+
+        user_row = await app.db.fetchone(
+            """
+            SELECT u.telegram_id AS telegram_id
+            FROM bookings b
+            JOIN users u ON u.id = b.user_id
+            WHERE b.id = ?;
+            """,
+            [booking_id],
+        )
+        user_tg_id = int(user_row["telegram_id"]) if user_row else None 
+
+        reminder_service = ReminderService(app.scheduler, app.db, app.bot)
+        await reminder_service.cancel_for_booking(booking_id)
+        await BookingService(app.db, app.bot, app.settings).admin_cancel_booking(booking_id)
+
+        if user_tg_id:
+            await app.bot.send_message(
+                chat_id=user_tg_id, 
+                text="Ваша запись была отменена администратором. Вы можете записаться заново."
+            )
+
+        await state.clear()
+        await call.message.edit_text(
+            f"✅ Запись на {booking['date']} в {booking['time']} отменена.",
+            reply_markup=back_to_admin_kb()
         )
         await call.answer()
         return
@@ -340,54 +407,116 @@ async def admin_add_slots(message: Message, state: FSMContext, **data) -> None:
     await state.clear()
     await message.answer(f"Готово. Слоты добавлены на <b>{d}</b>: <b>{', '.join(times)}</b>", reply_markup=back_to_admin_kb())
 
-
-@router.message(AdminStates.waiting_close_day)
-async def admin_close_day(message: Message, state: FSMContext, **data) -> None:
+@router.callback_query(CalendarCB.filter(), AdminStates.waiting_close_day)
+async def admin_close_day_calendar(call: CallbackQuery, callback_data: CalendarCB, state: FSMContext, **data) -> None:
     app = _get_app(data)
-    d = _parse_date(message.text or "")
-    if not d:
-        await message.answer("Неверная дата. Пример: <code>2026-03-18</code>", reply_markup=back_to_admin_kb())
+    today = date.today()
+    max_d = date.fromisoformat(iso_in_days(90))
+    year, month = callback_data.year, callback_data.month
+
+    if callback_data.action == "prev":
+        month -= 1
+        if month == 0:
+            month, year = 12, year - 1
+    elif callback_data.action == "next":
+        month += 1
+        if month == 13:
+            month, year = 1, year + 1
+    elif callback_data.action == "select":
+        chosen = date(callback_data.year, callback_data.month, callback_data.day).isoformat()
+        
+        # Закрываем день (отмечаем слоты как недоступные)
+        await SlotRepository(app.db).set_day_availability(chosen, is_available=False)
+        await state.clear()
+        
+        await call.message.edit_text(
+            f"✅ День {chosen} закрыт (слоты недоступны).", 
+            reply_markup=back_to_admin_kb()
+        )
+        await call.answer()
         return
-    await SlotRepository(app.db).set_day_availability(d, is_available=False)
-    await state.clear()
-    await message.answer(f"День <b>{d}</b> закрыт (слоты недоступны).", reply_markup=back_to_admin_kb())
-
-
-@router.message(AdminStates.waiting_cancel_booking)
-async def admin_cancel_booking(message: Message, state: FSMContext, **data) -> None:
-    app = _get_app(data)
-    try:
-        booking_id = int((message.text or "").strip())
-    except Exception:
-        await message.answer("Нужно число <code>booking_id</code>.", reply_markup=back_to_admin_kb())
+    else:
+        await call.answer()
         return
 
-    booking_repo = BookingRepository(app.db)
-    booking = await booking_repo.get_booking_by_id(booking_id)
-    if not booking:
-        await message.answer("Запись не найдена.", reply_markup=back_to_admin_kb())
-        return
-
-    user_row = await app.db.fetchone(
-        """
-        SELECT u.telegram_id AS telegram_id
-        FROM bookings b
-        JOIN users u ON u.id = b.user_id
-        WHERE b.id = ?;
-        """,
-        [booking_id],
+    # Обновляем календарь при перелистывании месяцев
+    all_future_dates = {(today + timedelta(days=i)).isoformat() for i in range(90)}
+    kb = build_calendar_kb(
+        year=year,
+        month=month,
+        available_dates=all_future_dates,
+        min_date=today,
+        max_date=max_d
     )
-    user_tg_id = int(user_row["telegram_id"]) if user_row else None
+    await call.message.edit_reply_markup(reply_markup=kb)
+    await call.answer()
 
-    reminder_service = ReminderService(app.scheduler, app.db, app.bot)
-    await reminder_service.cancel_for_booking(booking_id)
-    await BookingService(app.db, app.bot, app.settings).admin_cancel_booking(booking_id)
+@router.callback_query(CalendarCB.filter(), AdminStates.waiting_cancel_booking)
+async def admin_cancel_booking_calendar(call: CallbackQuery, callback_data: CalendarCB, state: FSMContext, **data) -> None:
+    app = _get_app(data)
+    today = date.today()
+    max_d = date.fromisoformat(iso_in_days(90))
+    year, month = callback_data.year, callback_data.month
 
-    if user_tg_id:
-        await app.bot.send_message(chat_id=user_tg_id, text="Ваша запись была отменена администратором. Вы можете записаться заново.")
+    if callback_data.action == "prev":
+        month -= 1
+        if month == 0:
+            month, year = 12, year - 1
+    elif callback_data.action == "next":
+        month += 1
+        if month == 13:
+            month, year = 1, year + 1
+    elif callback_data.action == "select":
+        chosen = date(callback_data.year, callback_data.month, callback_data.day).isoformat()
+        
+        rows = await app.db.fetchall(
+            """
+            SELECT b.id AS booking_id, s.time, u.name, u.phone
+            FROM bookings b
+            JOIN slots s ON s.id = b.slot_id
+            JOIN users u ON u.id = b.user_id
+            WHERE s.date = ?
+            ORDER BY s.time ASC;
+            """,
+            [chosen]
+        )
+        
+        if not rows:
+            await call.answer("На эту дату нет записей.", show_alert=True)
+            return
+            
+        kb_rows = []
+        for r in rows:
+            btn_text = f"❌ {r['time']} - {r['name']} ({r['phone']})"
+            kb_rows.append([
+                InlineKeyboardButton(
+                    text=btn_text, 
+                    callback_data=AdminCB(action="do_cancel", booking_id=int(r['booking_id'])).pack()
+                )
+            ])
+            
+        kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=AdminCB(action="cancel_booking").pack())])
 
-    await state.clear()
-    await message.answer(f"Запись <b>{booking_id}</b> отменена.", reply_markup=back_to_admin_kb())
+        await call.message.edit_text(
+            f"Записи на {chosen}:\nВыберите запись для отмены:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows)
+        )
+        await call.answer()
+        return
+    else:
+        await call.answer()
+        return
+
+    all_future_dates = {(today + timedelta(days=i)).isoformat() for i in range(90)}
+    kb = build_calendar_kb(
+        year=year,
+        month=month,
+        available_dates=all_future_dates,
+        min_date=today,
+        max_date=max_d
+    )
+    await call.message.edit_reply_markup(reply_markup=kb)
+    await call.answer()
 
 
 @router.message(AdminStates.waiting_schedule)
