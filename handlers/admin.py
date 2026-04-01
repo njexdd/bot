@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup
 
 from database.repository import BookingRepository, SlotRepository, UserRepository
 from keyboards.admin import AdminCB, admin_menu_kb, back_to_admin_kb
@@ -22,7 +22,9 @@ router = Router()
 class AdminStates(StatesGroup):
     waiting_day_date = State()
     waiting_slots = State()
-    waiting_delete_slot = State()
+    waiting_delete_slot_date = State()
+    waiting_delete_slot_id = State()
+    waiting_delete_confirm = State()
     waiting_close_day = State()
     waiting_cancel_booking = State()
     waiting_schedule = State()
@@ -61,7 +63,7 @@ async def admin_menu(call: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(AdminCB.filter())
-async def admin_actions(call: CallbackQuery, callback_data: AdminCB, state: FSMContext) -> None:
+async def admin_actions(call: CallbackQuery, callback_data: AdminCB, state: FSMContext, **data) -> None:
     action = callback_data.action
     await state.clear()
 
@@ -101,10 +103,87 @@ async def admin_actions(call: CallbackQuery, callback_data: AdminCB, state: FSMC
         return
 
     if action == "delete_slot":
-        await state.set_state(AdminStates.waiting_delete_slot)
+        await state.set_state(AdminStates.waiting_delete_slot_date)
+        
+        today = date.today()
+        end_date = iso_in_days(90)
+        # Генерируем все даты, чтобы админ мог выбрать любую для удаления слота
+        all_future_dates = {(today + timedelta(days=i)).isoformat() for i in range(90)}
+        
+        kb = build_calendar_kb(
+            year=today.year,
+            month=today.month,
+            available_dates=all_future_dates,
+            min_date=today,
+            max_date=date.fromisoformat(end_date),
+        )
         await call.message.edit_text(
-            "<b>Удалить слот</b>\n\nОтправьте <code>slot_id</code> (число).",
-            reply_markup=back_to_admin_kb(),
+            "Удалить слот\n\nВыберите дату в календаре:",
+            reply_markup=kb,
+        )
+        await call.answer()
+        return
+
+    if action == "ask_delete":
+        slot_id = callback_data.slot_id
+        app = _get_app(data)
+        slot = await SlotRepository(app.db).get_slot(slot_id)
+        
+        if not slot:
+            await call.answer("Слот не найден.")
+            return
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, удалить", callback_data=AdminCB(action="confirm_delete", slot_id=slot_id).pack()),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="menu:admin")
+            ]
+        ])
+        
+        await call.message.edit_text(
+            f"⚠️ **Подтвердите удаление**\n\nДата: {slot['date']}\nВремя: {slot['time']}\n\n"
+            "Внимание: если на этот слот был записан клиент, его запись также будет удалена!",
+            reply_markup=kb
+        )
+        await call.answer()
+        return
+
+    if action == "confirm_delete":
+        slot_id = callback_data.slot_id
+        app = _get_app(data)
+        slot_repo = SlotRepository(app.db)
+        
+        slot = await slot_repo.get_slot(slot_id) 
+        if slot:
+            await slot_repo.delete_slot(slot_id)
+            await call.message.edit_text(
+                f"✅ Слот {slot['date']} {slot['time']} успешно удален.",
+                reply_markup=back_to_admin_kb()
+            )
+        else:
+            await call.message.edit_text("Ошибка: слот не найден.", reply_markup=back_to_admin_kb())
+        
+        await state.clear()
+        await call.answer()
+        return
+    
+    if action == "confirm_delete_slot":
+        slot_id = callback_data.slot_id
+        app = _get_app(data)
+        
+        slot_repo = SlotRepository(app.db)
+        slot = await slot_repo.get_slot(slot_id)
+        
+        if not slot:
+            await call.answer("Слот уже удален или не найден.", show_alert=True)
+            await call.message.edit_text("Админ-панель", reply_markup=admin_menu_kb())
+            return
+            
+        await slot_repo.delete_slot(slot_id)
+        
+        await call.message.edit_text(
+            f"✅ Слот на {slot['date']} в {slot['time']} успешно удален.", 
+            reply_markup=back_to_admin_kb()
         )
         await call.answer()
         return
@@ -181,6 +260,62 @@ async def admin_add_day_calendar(call: CallbackQuery, callback_data: CalendarCB,
     await call.answer()
 
 
+@router.callback_query(CalendarCB.filter(), AdminStates.waiting_delete_slot_date)
+async def admin_delete_slot_calendar(call: CallbackQuery, callback_data: CalendarCB, state: FSMContext, **data) -> None:
+    app = _get_app(data)
+    today = date.today()
+    max_d = date.fromisoformat(iso_in_days(90))
+    year, month = callback_data.year, callback_data.month
+
+    if callback_data.action == "prev":
+        month -= 1
+        if month == 0:
+            month, year = 12, year - 1
+    elif callback_data.action == "next":
+        month += 1
+        if month == 13:
+            month, year = 1, year + 1
+    elif callback_data.action == "select":
+        chosen = date(callback_data.year, callback_data.month, callback_data.day).isoformat()
+        slots_repo = SlotRepository(app.db)
+        slots = await slots_repo.get_slots_by_date(chosen) # [cite: 29, 30]
+        
+        if not slots:
+            await call.answer("На эту дату нет слотов.", show_alert=True)
+            return
+
+        await state.set_state(AdminStates.waiting_delete_confirm) # Переходим к подтверждению
+        
+        rows = []
+        for s in slots:
+            # При нажатии на слот теперь вызываем действие 'ask_delete'
+            rows.append([
+                InlineKeyboardButton(
+                    text=f"🗑 {s['time']}", 
+                    callback_data=AdminCB(action="ask_delete", slot_id=int(s["id"])).pack()
+                )
+            ])
+        
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=AdminCB(action="delete_slot").pack())])
+        await call.message.edit_text(f"Выберите слот на {chosen} для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await call.answer()
+        return
+    else:
+        await call.answer()
+        return
+
+    # Перерисовка календаря при смене месяца
+    all_future_dates = {(today + timedelta(days=i)).isoformat() for i in range(90)}
+    kb = build_calendar_kb(
+        year=year,
+        month=month,
+        available_dates=all_future_dates,
+        min_date=today,
+        max_date=max_d
+    )
+    await call.message.edit_reply_markup(reply_markup=kb)
+    await call.answer()
+
 @router.message(AdminStates.waiting_slots)
 async def admin_add_slots(message: Message, state: FSMContext, **data) -> None:
     app = _get_app(data)
@@ -204,20 +339,6 @@ async def admin_add_slots(message: Message, state: FSMContext, **data) -> None:
     await slots_repo.create_slots(d, times)
     await state.clear()
     await message.answer(f"Готово. Слоты добавлены на <b>{d}</b>: <b>{', '.join(times)}</b>", reply_markup=back_to_admin_kb())
-
-
-@router.message(AdminStates.waiting_delete_slot)
-async def admin_delete_slot(message: Message, state: FSMContext, **data) -> None:
-    app = _get_app(data)
-    try:
-        slot_id = int((message.text or "").strip())
-    except Exception:
-        await message.answer("Нужно число <code>slot_id</code>.", reply_markup=back_to_admin_kb())
-        return
-    slot_repo = SlotRepository(app.db)
-    await slot_repo.delete_slot(slot_id)
-    await state.clear()
-    await message.answer(f"Слот <b>{slot_id}</b> удалён (если существовал).", reply_markup=back_to_admin_kb())
 
 
 @router.message(AdminStates.waiting_close_day)
