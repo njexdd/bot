@@ -216,7 +216,6 @@ async def admin_actions(call: CallbackQuery, callback_data: AdminCB, state: FSMC
         
         today = date.today()
         end_date = iso_in_days(90)
-        # Генерируем даты на 90 дней вперед [cite: 41, 42]
         all_future_dates = {(today + timedelta(days=i)).isoformat() for i in range(90)}
         
         kb = build_calendar_kb(
